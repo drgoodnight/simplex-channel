@@ -1,0 +1,42 @@
+{
+  "id": "simplex",
+  "label": "SimpleX Chat",
+  "version": "0.1.0",
+  "description": "SimpleX Chat channel for OpenClaw — private messaging with no user identifiers.",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "wsUrl": {
+        "type": "string",
+        "description": "WebSocket URL of the simplex-chat CLI server",
+        "default": "ws://localhost:5225"
+      },
+      "displayName": {
+        "type": "string",
+        "description": "Bot display name in SimpleX",
+        "default": "openclaw"
+      },
+      "autoAccept": {
+        "type": "boolean",
+        "description": "Auto-accept incoming contact requests",
+        "default": true
+      },
+      "whisper": {
+        "type": "object",
+        "description": "Local Whisper transcription for voice messages",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false
+          },
+          "apiUrl": {
+            "type": "string",
+            "description": "URL of the Whisper transcription service",
+            "default": "http://localhost:9000/transcribe"
+          }
+        }
+      }
+    },
+    "required": ["wsUrl"]
+  }
+}
