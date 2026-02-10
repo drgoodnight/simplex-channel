@@ -1,7 +1,7 @@
 {
   "id": "simplex",
   "label": "SimpleX Chat",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "SimpleX Chat channel for OpenClaw — private messaging with no user identifiers.",
   "configSchema": {
     "type": "object",

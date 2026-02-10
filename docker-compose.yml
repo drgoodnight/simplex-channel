@@ -34,7 +34,14 @@ services:
       - WHISPER_DEVICE=${WHISPER_DEVICE:-cpu}
     volumes:
       - whisper-models:/root/.cache/whisper
+      # Same volume, SAME path as simplex-cli — so file paths match
       - simplex-files:/home/simplex/files:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
 volumes:
   simplex-data:
