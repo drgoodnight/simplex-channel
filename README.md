@@ -45,9 +45,50 @@ The plugin connects to the SimpleX CLI via WebSocket, receives inbound messages,
 
 The SimpleX CLI is the headless chat client that bridges your phone to the server. You have two options: install it directly on the host (recommended) or run it in Docker.
 
-### Option A: Bare-Metal Install (Recommended)
+### Option A: Docker Container (Recommended)
 
-This is simpler, avoids Docker networking issues, and is what was battle-tested in production.
+This is the battle-tested approach. The included Docker container handles first-run profile creation automatically and keeps the SimpleX CLI isolated.
+
+```bash
+cd ~/.openclaw/extensions/simplex
+
+# Set your display name (what contacts see) — default is "openclaw"
+SIMPLEX_DISPLAY_NAME=nerp docker compose up -d simplex-cli
+
+# Watch the logs until you see "Starting SimpleX CLI on port 5225"
+docker compose logs -f simplex-cli
+```
+
+**First run** takes ~30 seconds — the entrypoint creates the user profile, waits for the database, then restarts cleanly in WebSocket server mode.
+
+**Verify it's healthy:**
+
+```bash
+docker compose ps
+# Should show: simplex-cli   Up (healthy)
+
+docker ps --filter name=simplex-cli
+```
+
+**Get your contact address** (needed to connect from your phone):
+
+```bash
+docker exec -it simplex-cli simplex-chat -e '/address'
+```
+
+If no address exists yet, create one:
+
+```bash
+docker exec -it simplex-cli simplex-chat -e '/address create'
+```
+
+Copy the `simplex://` link — you'll paste this into the SimpleX app on your phone.
+
+> **Troubleshooting:** If the container restart-loops on first run with "Address already in use", the init process didn't release the port fast enough. Run `docker compose down && docker compose up -d simplex-cli` — the profile already exists in the volume so second boot is clean.
+
+### Option B: Bare-Metal Install
+
+If you prefer running without Docker.
 
 **Download the binary:**
 
@@ -106,26 +147,6 @@ systemctl --user status simplex-chat.service
 # Test the WebSocket port:
 ss -tlnp | grep 5225
 ```
-
-### Option B: Docker Container
-
-Use this if you prefer container isolation.
-
-```bash
-cd ~/.openclaw/extensions/simplex
-docker compose up -d simplex-cli
-docker compose logs -f simplex-cli
-```
-
-Wait until you see `Starting SimpleX CLI on port 5225`. The container handles first-run profile creation automatically using the `SIMPLEX_DISPLAY_NAME` environment variable (default: `openclaw`).
-
-**To customize the display name:**
-
-```bash
-SIMPLEX_DISPLAY_NAME=nerp docker compose up -d simplex-cli
-```
-
-> **Note:** The Docker approach had port-binding timing issues during initial testing. If the container restart-loops, check logs with `docker compose logs simplex-cli`. The bare-metal approach is more reliable.
 
 ---
 
