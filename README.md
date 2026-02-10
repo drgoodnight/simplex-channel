@@ -53,7 +53,7 @@ This is the battle-tested approach. The included Docker container handles first-
 cd ~/.openclaw/extensions/simplex
 
 # Set your display name (what contacts see) — default is "openclaw"
-SIMPLEX_DISPLAY_NAME=nerp docker compose up -d simplex-cli
+SIMPLEX_DISPLAY_NAME=mybot docker compose up -d simplex-cli
 
 # Watch the logs until you see "Starting SimpleX CLI on port 5225"
 docker compose logs -f simplex-cli
@@ -112,7 +112,7 @@ chmod +x ~/.local/bin/simplex-chat
 simplex-chat -p 5225
 ```
 
-You'll be prompted for a display name (e.g., `nerp`, `openclaw`, whatever you want contacts to see). Enter it, then type `/address` to create your contact address. Copy the link — you'll need it to connect from your phone.
+You'll be prompted for a display name (e.g., `openclaw`, `mybot`, whatever you want contacts to see). Enter it, then type `/address` to create your contact address. Copy the link — you'll need it to connect from your phone.
 
 Press Ctrl+C to stop.
 
