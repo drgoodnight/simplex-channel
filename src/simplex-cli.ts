@@ -1,115 +1,110 @@
 /**
- * SimpleX CLI WebSocket Client.
+ * SimpleX CLI WebSocket client.
  *
- * Connects to simplex-chat running in WebSocket server mode (-p PORT).
- * Handles the corrId-based request/response protocol and emits async events.
+ * Connects to a simplex-chat instance running in WebSocket server mode
+ * (`simplex-chat -p 5225`) and provides a typed command/event interface.
  */
 
 import WebSocket from "ws";
-import type { SimplexCommand, SimplexResponse, SimplexEvent } from "./types.js";
 import { getLogger } from "./runtime.js";
+import type { SimplexCommand, SimplexEvent } from "./types.js";
 
-type EventCallback = (event: SimplexEvent) => void | Promise<void>;
+type EventHandler = (event: SimplexEvent) => void | Promise<void>;
 
 export class SimplexCli {
   private ws: WebSocket | null = null;
   private url: string;
-  private pending = new Map<string, (resp: SimplexEvent) => void>();
-  private eventHandler: EventCallback | null = null;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private running = false;
   private corrCounter = 0;
+  private pending = new Map<string, (resp: SimplexEvent) => void>();
+  private handlers: EventHandler[] = [];
+  private running = true;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** True when the WebSocket connection is open. */
+  connected = false;
 
   constructor(url: string) {
     this.url = url;
   }
 
-  get connected(): boolean {
-    return this.ws?.readyState === WebSocket.OPEN;
-  }
-
-  onEvent(handler: EventCallback): void {
-    this.eventHandler = handler;
-  }
+  /* ---------------------------------------------------------------- */
+  /*  Connection lifecycle                                            */
+  /* ---------------------------------------------------------------- */
 
   async connect(): Promise<void> {
-    this.running = true;
-    this._connect();
-  }
-
-  private _connect(): void {
     const log = getLogger();
-
-    if (!this.running) return;
-    if (this.ws) {
-      try { this.ws.close(); } catch {}
-      this.ws = null;
-    }
-
     log.info(`[simplex] Connecting to ${this.url}`);
-    const ws = new WebSocket(this.url, { maxPayload: 10 * 1024 * 1024 });
 
-    ws.on("open", () => {
-      log.info("[simplex] Connected to SimpleX CLI");
-      this.ws = ws;
-    });
+    return new Promise((resolve, reject) => {
+      this.ws = new WebSocket(this.url);
 
-    ws.on("message", (data: Buffer) => {
-      try {
-        const msg: SimplexResponse = JSON.parse(data.toString());
-        const corrId = msg.corrId || "";
-        const resp = msg.resp;
+      this.ws.on("open", () => {
+        this.connected = true;
+        log.info("[simplex] Connected to SimpleX CLI");
+        resolve();
+      });
 
-        if (!resp) return;
+      this.ws.on("message", (raw: Buffer) => {
+        try {
+          const data = JSON.parse(raw.toString());
+          const resp: SimplexEvent = data.resp ?? data;
 
-        // Resolve pending command
-        if (corrId && this.pending.has(corrId)) {
-          const resolve = this.pending.get(corrId)!;
-          this.pending.delete(corrId);
-          resolve(resp);
-          return;
+          // Resolve pending command if correlated
+          if (resp.corrId && this.pending.has(resp.corrId)) {
+            const cb = this.pending.get(resp.corrId)!;
+            this.pending.delete(resp.corrId);
+            cb(resp);
+          }
+
+          // Fan-out to event listeners
+          for (const handler of this.handlers) {
+            Promise.resolve(handler(resp)).catch((err) =>
+              log.error(`[simplex] Event handler error: ${err.message}`)
+            );
+          }
+        } catch {
+          // Ignore unparseable frames
         }
+      });
 
-        // Async event — dispatch to handler
-        if (this.eventHandler) {
-          Promise.resolve(this.eventHandler(resp)).catch((err) => {
-            log.error("[simplex] Event handler error:", err);
-          });
-        }
-      } catch {
-        // Non-JSON message or parse error — skip
-      }
-    });
+      this.ws.on("close", () => {
+        this.connected = false;
+        log.info("[simplex] WebSocket closed");
+        this.scheduleReconnect();
+      });
 
-    ws.on("close", () => {
-      log.warn("[simplex] Connection closed");
-      this.ws = null;
-      this._scheduleReconnect();
-    });
-
-    ws.on("error", (err) => {
-      log.error("[simplex] WebSocket error:", err.message);
-      // 'close' will fire after this, triggering reconnect
+      this.ws.on("error", (err) => {
+        this.connected = false;
+        log.error(`[simplex] WebSocket error: ${err.message}`);
+        if (!this.connected) reject(err);
+        this.scheduleReconnect();
+      });
     });
   }
 
-  private _scheduleReconnect(): void {
+  private scheduleReconnect(): void {
     if (!this.running) return;
-    if (this.reconnectTimer) return;
-
     const log = getLogger();
-    const delay = 5000;
-    log.info(`[simplex] Reconnecting in ${delay / 1000}s...`);
-    this.reconnectTimer = setTimeout(() => {
+    if (this.reconnectTimer) return;
+    this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;
-      this._connect();
-    }, delay);
+      log.info("[simplex] Reconnecting...");
+      try {
+        await this.connect();
+      } catch {
+        // connect() will schedule another attempt via on("error")
+      }
+    }, 5_000);
   }
+
+  /* ---------------------------------------------------------------- */
+  /*  Commands                                                        */
+  /* ---------------------------------------------------------------- */
 
   /**
    * Send a CLI command and wait for the correlated response.
    */
-  async sendCommand(cmd: string, timeoutMs = 30000): Promise<SimplexEvent> {
+  async sendCommand(cmd: string, timeoutMs = 30_000): Promise<SimplexEvent> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error("SimpleX CLI not connected");
     }
@@ -134,10 +129,10 @@ export class SimplexCli {
 
   /**
    * Send a text message to a SimpleX contact.
+   * Single-quotes around the name handle display names with spaces.
    */
   async sendMessage(contact: string, text: string): Promise<SimplexEvent> {
-    // SimpleX CLI syntax for DMs: @displayName message text
-    return this.sendCommand(`@${contact} ${text}`);
+    return this.sendCommand(`@'${contact}' ${text}`);
   }
 
   /**
@@ -148,17 +143,28 @@ export class SimplexCli {
   }
 
   /**
-   * Get or create the bot's SimpleX address.
+   * Get or create the bot's SimpleX address (invitation link).
    */
   async getAddress(): Promise<string | null> {
     const resp = await this.sendCommand("/address");
     if (resp.type === "userContactLink") {
       return resp.contactLink?.connLinkContact?.connFullLink || null;
     }
-    // Try creating
     const createResp = await this.sendCommand("/address create");
     return createResp.connLinkContact?.connFullLink || null;
   }
+
+  /* ---------------------------------------------------------------- */
+  /*  Event subscriptions                                             */
+  /* ---------------------------------------------------------------- */
+
+  onEvent(handler: EventHandler): void {
+    this.handlers.push(handler);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  Teardown                                                        */
+  /* ---------------------------------------------------------------- */
 
   disconnect(): void {
     this.running = false;

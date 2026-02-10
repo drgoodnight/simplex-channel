@@ -1,15 +1,15 @@
 /**
- * SimpleX channel monitor.
+ * SimpleX inbound message monitor.
  *
- * Listens for incoming messages on the SimpleX CLI WebSocket connection,
- * parses them, handles voice transcription, and dispatches to OpenClaw's
- * auto-reply system for agent processing.
+ * Connects to the SimpleX CLI WebSocket, receives messages, and
+ * dispatches them into OpenClaw's reply pipeline using the same
+ * mechanism as built-in channels (Telegram, WhatsApp, etc.).
  */
 
 import { SimplexCli } from "./simplex-cli.js";
 import { parseEvent } from "./parser.js";
 import { transcribe } from "./whisper.js";
-import { getLogger, getRuntime, getConfig } from "./runtime.js";
+import { getLogger, getApi } from "./runtime.js";
 import type { SimplexEvent, SimplexPluginConfig, InboundMessage } from "./types.js";
 
 let cli: SimplexCli | null = null;
@@ -18,21 +18,12 @@ export function getCli(): SimplexCli | null {
   return cli;
 }
 
-/**
- * Start the SimpleX monitor.
- *
- * Connects to the SimpleX CLI WebSocket server and begins
- * processing inbound messages.
- */
 export async function startMonitor(pluginConfig: SimplexPluginConfig): Promise<void> {
   const log = getLogger();
-
   cli = new SimplexCli(pluginConfig.wsUrl);
-
   cli.onEvent(async (event: SimplexEvent) => {
     await handleEvent(event, pluginConfig);
   });
-
   await cli.connect();
   log.info(`[simplex] Monitor started → ${pluginConfig.wsUrl}`);
 }
@@ -44,9 +35,10 @@ export function stopMonitor(): void {
   }
 }
 
-/**
- * Handle a raw SimpleX event.
- */
+/* ------------------------------------------------------------------ */
+/*  Event routing                                                     */
+/* ------------------------------------------------------------------ */
+
 async function handleEvent(
   event: SimplexEvent,
   config: SimplexPluginConfig
@@ -66,18 +58,16 @@ async function handleEvent(
     return;
   }
 
-  // Parse message events
   const messages = parseEvent(event);
   for (const msg of messages) {
     await processMessage(msg, config);
   }
 }
 
-/**
- * Process a single inbound message:
- *  1. Transcribe voice if applicable
- *  2. Dispatch to OpenClaw's agent/auto-reply system
- */
+/* ------------------------------------------------------------------ */
+/*  Message dispatch                                                  */
+/* ------------------------------------------------------------------ */
+
 async function processMessage(
   msg: InboundMessage,
   config: SimplexPluginConfig
@@ -85,13 +75,16 @@ async function processMessage(
   const log = getLogger();
   let text = msg.text || "";
 
-  // Voice transcription
+  // Optional voice transcription
   if (msg.voiceFilePath && config.whisper.enabled) {
-    const transcription = await transcribe(msg.voiceFilePath, config.whisper.apiUrl);
+    const transcription = await transcribe(
+      msg.voiceFilePath,
+      config.whisper.apiUrl
+    );
     if (transcription) {
-      text = `[🎤 Voice] ${transcription}`;
+      text = `[Voice] ${transcription}`;
     } else if (!text) {
-      text = "[Voice message received — transcription unavailable]";
+      text = "[Voice message — transcription unavailable]";
     }
   }
 
@@ -99,44 +92,95 @@ async function processMessage(
 
   log.info(`[simplex] ${msg.contactName}: ${text.slice(0, 100)}`);
 
-  // -----------------------------------------------------------------------
-  // Dispatch to OpenClaw auto-reply system.
-  //
-  // This is the key integration point. The runtime.handleAutoReply() method
-  // feeds the message into the agent pipeline — the same path that
-  // WhatsApp, Telegram, and other channels use.
-  //
-  // The sessionKey format follows OpenClaw's convention:
-  //   agent:<agentId>:<channel>:dm:<contactIdentifier>
-  //
-  // If the exact API differs in your OpenClaw version, this is the one
-  // function call to adjust.
-  // -----------------------------------------------------------------------
-
   try {
-    const runtime = getRuntime();
+    const api = getApi();
+    const cfg = api.config;
     const sessionKey = `agent:main:simplex:dm:${msg.contactName}`;
+    const messageId = `simplex-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-    await runtime.handleAutoReply({
-      channel: "simplex",
-      channelType: "dm",
-      sessionKey,
-      sender: {
-        id: String(msg.contactId || msg.contactName),
-        displayName: msg.contactName,
-      },
-      text,
-      // Pass file metadata if present
-      ...(msg.fileInfo && {
-        media: {
-          type: "file",
-          path: msg.fileInfo.path,
-          name: msg.fileInfo.name,
-          size: msg.fileInfo.size,
+    // Build the inbound context payload (same shape all channels use)
+    const ctx: Record<string, any> = {
+      Body: text,
+      BodyForAgent: text,
+      BodyForCommands: text,
+      RawBody: text,
+      From: msg.contactName,
+      To: config.displayName || "openclaw",
+      Surface: "simplex",
+      Provider: "simplex",
+      SessionKey: sessionKey,
+      OriginatingChannel: "simplex",
+      OriginatingTo: msg.contactName,
+      AccountId: "default",
+      MessageSid: messageId,
+      SenderId: String(msg.contactId || msg.contactName),
+      SenderName: msg.contactName,
+    };
+
+    // Record inbound session metadata
+    try {
+      api.runtime.channel.session.recordInboundSession({
+        sessionKey,
+        channel: "simplex",
+        from: msg.contactName,
+        to: config.displayName || "openclaw",
+        accountId: "default",
+      });
+    } catch (e: any) {
+      // Non-fatal — session tracking is optional
+    }
+
+    // Dispatch via OpenClaw's buffered reply pipeline.
+    // The `deliver` callback is invoked with each chunk of the agent's
+    // response, which we forward back to the SimpleX contact.
+    const { dispatchReplyWithBufferedBlockDispatcher } =
+      api.runtime.channel.reply;
+
+    await dispatchReplyWithBufferedBlockDispatcher({
+      ctx,
+      cfg,
+      dispatcherOptions: {
+        deliver: async (payload: any, _info: any) => {
+          const replyText =
+            typeof payload === "string"
+              ? payload
+              : payload?.text ||
+                payload?.body ||
+                payload?.Body ||
+                String(payload);
+
+          if (!replyText || !cli?.connected) return;
+
+          const chunks = chunkMessage(replyText, 4000);
+          for (const chunk of chunks) {
+            await cli.sendMessage(msg.contactName, chunk);
+          }
         },
-      }),
+      },
     });
   } catch (err: any) {
-    log.error(`[simplex] Failed to dispatch message: ${err.message}`);
+    log.error(`[simplex] Dispatch failed: ${err.message}`);
   }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                           */
+/* ------------------------------------------------------------------ */
+
+function chunkMessage(text: string, maxLen: number): string[] {
+  if (text.length <= maxLen) return [text];
+  const chunks: string[] = [];
+  let remaining = text;
+  while (remaining.length > 0) {
+    if (remaining.length <= maxLen) {
+      chunks.push(remaining);
+      break;
+    }
+    let breakAt = remaining.lastIndexOf("\n", maxLen);
+    if (breakAt < maxLen * 0.5) breakAt = remaining.lastIndexOf(" ", maxLen);
+    if (breakAt < maxLen * 0.3) breakAt = maxLen;
+    chunks.push(remaining.slice(0, breakAt));
+    remaining = remaining.slice(breakAt).trimStart();
+  }
+  return chunks;
 }

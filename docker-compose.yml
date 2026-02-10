@@ -1,13 +1,4 @@
-# =============================================================================
-# SimpleX CLI + Whisper sidecars for the OpenClaw SimpleX channel plugin.
-#
-# The plugin itself runs inside the OpenClaw gateway process.
-# These containers provide the SimpleX CLI and optional Whisper transcription.
-#
-# Usage:
-#   docker compose up -d                     # SimpleX CLI only
-#   docker compose --profile whisper up -d   # + Whisper transcription
-# =============================================================================
+version: "3.8"
 
 services:
   simplex-cli:
@@ -16,12 +7,12 @@ services:
     restart: unless-stopped
     volumes:
       - simplex-data:/home/simplex/.simplex
-      # Voice/file storage — shared with whisper at same path
       - simplex-files:/home/simplex/files
     ports:
       - "${SIMPLEX_WS_PORT:-5225}:${SIMPLEX_WS_PORT:-5225}"
     environment:
       - SIMPLEX_WS_PORT=${SIMPLEX_WS_PORT:-5225}
+      - SIMPLEX_DISPLAY_NAME=${SIMPLEX_DISPLAY_NAME:-openclaw}
     healthcheck:
       test: ["CMD", "sh", "-c", "ss -tlnp | grep -q ${SIMPLEX_WS_PORT:-5225}"]
       interval: 15s
@@ -43,14 +34,7 @@ services:
       - WHISPER_DEVICE=${WHISPER_DEVICE:-cpu}
     volumes:
       - whisper-models:/root/.cache/whisper
-      # Same volume, SAME path as simplex-cli — so file paths match
       - simplex-files:/home/simplex/files:ro
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
 
 volumes:
   simplex-data:

@@ -1,7 +1,6 @@
 FROM ubuntu:24.04
 
-ARG SIMPLEX_VERSION=v6.3.3
-ARG TARGETARCH
+ARG SIMPLEX_VERSION=v6.4.1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates iproute2 \
@@ -10,19 +9,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN useradd -m -s /bin/bash simplex
 
 # Download simplex-chat CLI
-RUN ARCH=$(case "${TARGETARCH}" in \
-      "amd64") echo "x86_64" ;; \
+RUN ARCH=$(case "$(dpkg --print-architecture)" in \
+      "amd64") echo "x86-64" ;; \
       "arm64") echo "aarch64" ;; \
-      *) echo "x86_64" ;; \
+      *) echo "x86-64" ;; \
     esac) && \
-    curl -fsSL "https://github.com/simplex-chat/simplex-chat/releases/download/${SIMPLEX_VERSION}/simplex-chat-ubuntu-24.04-${ARCH}" \
+    curl -fsSL "https://github.com/simplex-chat/simplex-chat/releases/download/${SIMPLEX_VERSION}/simplex-chat-ubuntu-24_04-${ARCH}" \
       -o /usr/local/bin/simplex-chat && \
     chmod +x /usr/local/bin/simplex-chat
 
-RUN mkdir -p /home/simplex/.simplex /home/simplex/files && \
-    chown -R simplex:simplex /home/simplex
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 USER simplex
 WORKDIR /home/simplex
 
-CMD simplex-chat -d /home/simplex/.simplex -p ${SIMPLEX_WS_PORT:-5225} --files-folder /home/simplex/files
+ENV SIMPLEX_DISPLAY_NAME=openclaw
+ENV SIMPLEX_WS_PORT=5225
+
+EXPOSE ${SIMPLEX_WS_PORT}
+
+ENTRYPOINT ["/entrypoint.sh"]

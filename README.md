@@ -1,125 +1,288 @@
-# openclaw-channel-simplex
+# SimpleX Chat Channel for OpenClaw
 
-OpenClaw channel plugin for [SimpleX Chat](https://simplex.chat) — the most private messenger.
+OpenClaw channel plugin for [SimpleX Chat](https://simplex.chat) — private messaging with full agent access, memory, tools, and cross-channel continuity.
 
-SimpleX has no user IDs, no phone numbers, no metadata. This plugin makes it a native OpenClaw channel, just like WhatsApp or Telegram — full agent access, memory, tools, workspace.
+No user IDs. No phone numbers. No metadata. Full agent.
+
+---
+
+## How It Works
 
 ```
-SimpleX App (Phone/Desktop)
+SimpleX App (Phone)
         │
         ▼
-┌──────────────────────────┐
-│  simplex-chat CLI        │  ← Docker container or bare-metal
-│  WebSocket server :5225  │
-└───────────┬──────────────┘
-            │ ws://
-            ▼
-┌──────────────────────────┐
-│  OpenClaw Gateway        │
-│  ├─ simplex plugin  ←────── this repo
-│  ├─ agent pipeline       │
-│  ├─ memory / tools       │
-│  └─ other channels       │
-└──────────────────────────┘
+┌──────────────────────────────┐
+│   simplex-chat CLI           │
+│   (WebSocket server :5225)   │
+└──────────┬───────────────────┘
+           │ ws://localhost:5225
+           ▼
+┌──────────────────────────────┐
+│   OpenClaw Gateway           │
+│   └─ simplex plugin          │
+│       ├─ monitor.ts (inbound)│
+│       └─ channel.ts (outbound│)
+└──────────┬───────────────────┘
+           │
+           ▼
+     LLM API (GPT / Claude)
 ```
 
-## What you get
+The plugin connects to the SimpleX CLI via WebSocket, receives inbound messages, and dispatches them through OpenClaw's standard reply pipeline — the same path used by Telegram, WhatsApp, and every other channel. This gives SimpleX contacts full access to the agent's memory, tools, workspace, and skills.
 
-- **Full OpenClaw agent** — same brain, memory, and tools as your WhatsApp/Telegram channels
-- **Cross-channel continuity** — conversation context shared across all channels
-- **Voice messages** — optional local Whisper transcription (no audio leaves your infra)
-- **Auto-accept contacts** — or pair manually like other channels
-- **DM sessions** — each SimpleX contact gets their own session (`agent:main:simplex:dm:<name>`)
+---
 
 ## Prerequisites
 
-1. **OpenClaw** installed and running (bare-metal or Docker)
-2. **simplex-chat CLI** running in WebSocket server mode (Docker container included)
-3. **Node.js ≥ 22** (already required by OpenClaw)
+- **OpenClaw** installed and running (`openclaw gateway status`)
+- **Node.js ≥ 22** (already required by OpenClaw)
+- **simplex-chat CLI** running in WebSocket server mode (setup below)
 
-## Install
+---
 
-### 1. Get the plugin into OpenClaw's extensions directory
+## Step 1: Set Up the SimpleX CLI
+
+The SimpleX CLI is the headless chat client that bridges your phone to the server. You have two options: install it directly on the host (recommended) or run it in Docker.
+
+### Option A: Bare-Metal Install (Recommended)
+
+This is simpler, avoids Docker networking issues, and is what was battle-tested in production.
+
+**Download the binary:**
 
 ```bash
-# Clone into OpenClaw's extensions path
+# For x86_64 (most VPS):
+curl -fsSL "https://github.com/simplex-chat/simplex-chat/releases/download/v6.4.1/simplex-chat-ubuntu-24_04-x86-64" \
+  -o ~/.local/bin/simplex-chat
+chmod +x ~/.local/bin/simplex-chat
+
+# For ARM64:
+curl -fsSL "https://github.com/simplex-chat/simplex-chat/releases/download/v6.4.1/simplex-chat-ubuntu-24_04-aarch64" \
+  -o ~/.local/bin/simplex-chat
+chmod +x ~/.local/bin/simplex-chat
+```
+
+> Check [SimpleX releases](https://github.com/simplex-chat/simplex-chat/releases) for the latest version.
+
+**First run — create your profile interactively:**
+
+```bash
+simplex-chat -p 5225
+```
+
+You'll be prompted for a display name (e.g., `nerp`, `openclaw`, whatever you want contacts to see). Enter it, then type `/address` to create your contact address. Copy the link — you'll need it to connect from your phone.
+
+Press Ctrl+C to stop.
+
+**Create a systemd service for 24/7 operation:**
+
+```bash
+cat > ~/.config/systemd/user/simplex-chat.service << 'EOF'
+[Unit]
+Description=SimpleX Chat CLI (WebSocket mode)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/simplex-chat -p 5225
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+
+systemctl --user daemon-reload
+systemctl --user enable --now simplex-chat.service
+```
+
+**Verify it's running:**
+
+```bash
+systemctl --user status simplex-chat.service
+# Should show "active (running)"
+
+# Test the WebSocket port:
+ss -tlnp | grep 5225
+```
+
+### Option B: Docker Container
+
+Use this if you prefer container isolation.
+
+```bash
+cd ~/.openclaw/extensions/simplex
+docker compose up -d simplex-cli
+docker compose logs -f simplex-cli
+```
+
+Wait until you see `Starting SimpleX CLI on port 5225`. The container handles first-run profile creation automatically using the `SIMPLEX_DISPLAY_NAME` environment variable (default: `openclaw`).
+
+**To customize the display name:**
+
+```bash
+SIMPLEX_DISPLAY_NAME=nerp docker compose up -d simplex-cli
+```
+
+> **Note:** The Docker approach had port-binding timing issues during initial testing. If the container restart-loops, check logs with `docker compose logs simplex-cli`. The bare-metal approach is more reliable.
+
+---
+
+## Step 2: Install the Plugin
+
+```bash
+# Clone into OpenClaw's extensions directory
+mkdir -p ~/.openclaw/extensions
 cd ~/.openclaw/extensions
-git clone https://github.com/YOUR_USER/openclaw-channel-simplex.git simplex
+git clone https://github.com/YOUR_USER/simplex-channel.git simplex
 cd simplex
 npm install
 ```
 
-Or use the OpenClaw CLI:
-```bash
-openclaw plugins install -l /path/to/openclaw-channel-simplex
-```
+---
 
-### 2. Start the SimpleX CLI
+## Step 3: Configure OpenClaw
 
-The SimpleX CLI is a Haskell binary that holds your SimpleX identity and contacts. It runs as a WebSocket server that the plugin connects to.
-
-**Option A — Docker (recommended):**
-```bash
-cd /path/to/openclaw-channel-simplex
-docker compose up -d simplex-cli
-```
-
-**Option B — Bare-metal:**
-```bash
-# Install simplex-chat CLI
-curl -o- https://raw.githubusercontent.com/simplex-chat/simplex-chat/stable/install.sh | bash
-
-# Run in WebSocket server mode
-simplex-chat -p 5225
-```
-
-### 3. Configure OpenClaw
-
-Add to your `openclaw.json`:
+Edit `~/.openclaw/openclaw.json` and add the simplex plugin under `plugins.entries`:
 
 ```json
 {
-  "channels": {
-    "simplex": {
-      "wsUrl": "ws://localhost:5225",
-      "autoAccept": true
+  "plugins": {
+    "entries": {
+      "telegram": {
+        "enabled": true
+      },
+      "simplex": {
+        "enabled": true,
+        "config": {
+          "wsUrl": "ws://localhost:5225",
+          "autoAccept": true
+        }
+      }
     }
   }
 }
 ```
 
-### 4. Restart the gateway
+> **Important:** The config goes under `plugins.entries.simplex.config`, NOT under `channels.simplex`. OpenClaw treats plugin channels differently from built-in ones.
+
+**Full config options:**
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `wsUrl` | `ws://localhost:5225` | SimpleX CLI WebSocket URL |
+| `displayName` | `openclaw` | Name shown in agent context |
+| `autoAccept` | `true` | Auto-accept contact requests |
+| `whisper.enabled` | `false` | Enable voice transcription |
+| `whisper.apiUrl` | `http://localhost:9000/transcribe` | Whisper server URL |
+
+---
+
+## Step 4: Restart and Connect
 
 ```bash
 openclaw gateway restart
 ```
 
-### 5. Connect from your phone
+You should see in the logs:
 
-Get the bot's SimpleX address:
-```bash
-# The agent can create this, or via CLI:
-docker compose exec simplex-cli simplex-chat
-# Then type: /address
+```
+[simplex] Loading SimpleX Chat channel plugin
+[simplex] Config: ws=ws://localhost:5225 autoAccept=true whisper=false
+[simplex] Monitor started → ws://localhost:5225
+[simplex] Connected to SimpleX CLI
 ```
 
-Scan the QR code or paste the address into your SimpleX app → "Connect via link".
+### Get Your Contact Address
 
-## Voice Messages (Optional)
+If you ran the CLI interactively during setup, you already have the address. Otherwise, check the CLI directly:
 
-For local Whisper transcription of voice messages:
-
-### Start the Whisper sidecar:
 ```bash
+# If bare-metal, attach briefly:
+simplex-chat
+# Type: /address
+# Copy the simplex:// link
+# Ctrl+C
+```
+
+Or if using Docker:
+
+```bash
+docker exec -it simplex-cli simplex-chat -e '/address'
+```
+
+### Connect from Your Phone
+
+1. Open SimpleX Chat on your phone
+2. Tap **+** → **Connect via link**
+3. Paste the `simplex://` address
+4. Send a message — the agent should reply
+
+---
+
+## Chat Commands
+
+All standard OpenClaw commands work via SimpleX:
+
+| Command | Action |
+|---------|--------|
+| `/new` or `/reset` | Reset session (start fresh) |
+| `/status` | Show model, tokens, cost |
+| `/compact` | Manually compact context |
+| `/think <level>` | Set thinking level |
+| `/verbose on/off` | Toggle verbose mode |
+| `/usage off/tokens/full` | Usage footer display |
+
+---
+
+## Architecture Details
+
+### Inbound Flow (Phone → Agent)
+
+1. SimpleX CLI receives encrypted message via SimpleX protocol
+2. CLI emits event on WebSocket (port 5225)
+3. Plugin's `monitor.ts` parses the event into an `InboundMessage`
+4. Monitor builds an OpenClaw `ctx` payload (same format as Telegram/WhatsApp)
+5. `dispatchReplyWithBufferedBlockDispatcher()` feeds it into the agent pipeline
+6. Agent processes the message (LLM call, tools, memory)
+7. Agent response arrives in the `deliver` callback
+8. Plugin sends the reply back via `simplex-chat` CLI command: `@'contact name' response text`
+
+### Outbound Flow (Agent → Phone)
+
+The `channel.ts` module registers a `sendText` handler. When the agent needs to send a message (e.g., from a cron job or webhook), OpenClaw calls this handler, which forwards to the CLI.
+
+### Session Keys
+
+Session format: `agent:main:simplex:dm:<contact_display_name>`
+
+This follows OpenClaw's standard session key pattern. Each SimpleX contact gets their own session with independent memory and context.
+
+### Contact Names with Spaces
+
+SimpleX assigns display names like `dolphin smooth_1`. The CLI command syntax uses single quotes to handle spaces: `@'dolphin smooth_1' message text`.
+
+---
+
+## Voice Transcription (Optional)
+
+For voice message support, run the Whisper container:
+
+```bash
+cd ~/.openclaw/extensions/simplex
 docker compose --profile whisper up -d
 ```
 
-### Enable in config:
+Enable in config:
+
 ```json
 {
-  "channels": {
-    "simplex": {
+  "simplex": {
+    "enabled": true,
+    "config": {
       "wsUrl": "ws://localhost:5225",
+      "autoAccept": true,
       "whisper": {
         "enabled": true,
         "apiUrl": "http://localhost:9000/transcribe"
@@ -129,84 +292,116 @@ docker compose --profile whisper up -d
 }
 ```
 
-### Whisper model selection
-
-Set `WHISPER_MODEL` in your environment or `docker-compose.yml`:
-
-| Model | RAM | Best for |
-|-------|-----|----------|
-| `tiny` | ~1 GB | Quick, English-only |
-| `base` | ~1 GB | **Default** — good accuracy |
-| `small` | ~2 GB | Better with accents |
-| `medium` | ~5 GB | Great accuracy |
-| `large-v3` | ~10 GB | Best (GPU recommended) |
-
-## Configuration Reference
-
-All config goes under `channels.simplex` in `openclaw.json`:
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `wsUrl` | string | `ws://localhost:5225` | SimpleX CLI WebSocket URL |
-| `displayName` | string | `openclaw` | Bot profile name in SimpleX |
-| `autoAccept` | boolean | `true` | Auto-accept contact requests |
-| `whisper.enabled` | boolean | `false` | Enable voice transcription |
-| `whisper.apiUrl` | string | `http://localhost:9000/transcribe` | Whisper service URL |
-
-## Architecture
-
-This is a **native OpenClaw channel plugin** — it runs inside the gateway process, not as a separate bridge. The flow is:
-
-1. **simplex-chat CLI** runs as a WebSocket server (Docker or bare-metal)
-2. **This plugin** connects to the CLI via WebSocket from inside the OpenClaw gateway
-3. **Inbound messages** are parsed and dispatched through OpenClaw's auto-reply system → agent pipeline
-4. **Agent responses** are sent back through the plugin's `outbound.sendText` → SimpleX CLI → your phone
-
-This means you get the full OpenClaw stack: persistent memory, tool execution, workspace files, browser control, cron jobs, and cross-channel context sharing.
-
-## Project Structure
-
-```
-├── package.json              # npm manifest + OpenClaw plugin metadata
-├── openclaw.plugin.json      # Config schema for validation
-├── src/
-│   ├── index.ts              # Plugin entry — register + startup
-│   ├── channel.ts            # Channel definition (outbound.sendText, config)
-│   ├── monitor.ts            # Inbound message handling + auto-reply dispatch
-│   ├── simplex-cli.ts        # WebSocket client for simplex-chat CLI
-│   ├── parser.ts             # Extract messages from SimpleX event structures
-│   ├── whisper.ts            # Optional Whisper transcription client
-│   ├── runtime.ts            # Plugin API reference bridge
-│   └── types.ts              # TypeScript type definitions
-├── docker-compose.yml        # SimpleX CLI + Whisper sidecars
-└── docker/
-    ├── simplex-cli/          # SimpleX CLI container
-    └── whisper/              # Whisper transcription container
-```
+---
 
 ## Backup
 
-The SimpleX CLI data directory contains your identity and all contacts. **Loss = new identity, all contacts gone.**
+**Critical directories:**
 
 ```bash
-# Stop CLI, backup volume, restart
-docker compose stop simplex-cli
-docker run --rm -v simplex-channel_simplex-data:/data -v $(pwd):/backup \
-  alpine tar czf /backup/simplex-backup-$(date +%Y%m%d).tar.gz -C /data .
-docker compose start simplex-cli
+# SimpleX CLI data (identity, contacts, messages)
+~/.simplex/                        # bare-metal
+# or Docker volume: simplex-channel_simplex-data
+
+# OpenClaw plugin
+~/.openclaw/extensions/simplex/
+
+# OpenClaw memory (shared across all channels)
+~/.clawdbot/                       # or ~/.openclaw/
+~/clawd/
 ```
+
+**Backup commands:**
+
+```bash
+# Bare-metal SimpleX data
+rsync -avz ~/.simplex/ ./backup-simplex-$(date +%Y%m%d)/
+
+# Docker SimpleX data
+docker run --rm \
+  -v simplex-channel_simplex-data:/data \
+  -v $(pwd):/backup \
+  ubuntu tar czf /backup/simplex-data-$(date +%Y%m%d).tar.gz -C /data .
+```
+
+> **Loss of `~/.simplex/` = loss of all SimpleX contacts and identity.** Back it up.
+
+---
+
+## Troubleshooting
+
+### Plugin not loading
+
+```bash
+openclaw gateway restart 2>&1 | grep simplex
+```
+
+Should show `[simplex] Loading SimpleX Chat channel plugin`. If not, check that the extension directory is discoverable:
+
+```bash
+ls ~/.openclaw/extensions/simplex/package.json
+# Must exist and contain "openclaw.extensions"
+```
+
+### Connected but no replies
+
+1. Check for stale gateway processes: `ps aux | grep openclaw-gateway`
+2. Kill all and restart: `kill $(pgrep -f openclaw-gateway); sleep 2; openclaw gateway start`
+3. Check logs: `grep simplex /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log | tail -20`
+
+### "runtime.handleAutoReply is not a function"
+
+You're running an old version of `monitor.ts`. The correct dispatch method is `api.runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher()`. Pull the latest code.
+
+### SimpleX CLI won't start (port busy)
+
+```bash
+# Check what's using port 5225
+ss -tlnp | grep 5225
+
+# Kill it
+kill $(lsof -t -i:5225) 2>/dev/null
+```
+
+### Config validation error
+
+The simplex config goes under `plugins.entries.simplex.config` in `openclaw.json`, NOT under `channels.simplex`. The `channels` section is for built-in channels only.
+
+---
+
+## File Structure
+
+```
+~/.openclaw/extensions/simplex/
+├── src/
+│   ├── index.ts          # Plugin entry point
+│   ├── monitor.ts         # Inbound: SimpleX → agent pipeline
+│   ├── channel.ts         # Outbound: agent → SimpleX
+│   ├── simplex-cli.ts     # WebSocket client for SimpleX CLI
+│   ├── parser.ts          # Event parser
+│   ├── whisper.ts         # Voice transcription client
+│   ├── runtime.ts         # Shared API state
+│   └── types.ts           # TypeScript types
+├── docker/
+│   └── simplex-cli/
+│       ├── Dockerfile
+│       └── entrypoint.sh
+├── docker-compose.yml
+├── package.json
+├── tsconfig.json
+└── README.md
+```
+
+---
 
 ## Security Notes
 
-- SimpleX CLI data = private keys. Treat like SSH keys.
-- The plugin runs in-process with OpenClaw — it has the same trust level as any other channel.
-- Whisper runs fully offline — no audio leaves your infrastructure.
-- Don't expose port 5225 to the public internet. Use localhost or Tailscale only.
+- SimpleX provides quantum-resistant end-to-end encryption with perfect forward secrecy
+- No user identifiers are transmitted — contacts connect via one-time invitation links
+- The CLI stores identity keys in `~/.simplex/` — protect this directory
+- `autoAccept: true` means anyone with your address can start a conversation
+- Set `autoAccept: false` and use `openclaw pairing` for manual approval
 
-## Status
+---
 
-**Alpha** — the core integration point (`runtime.handleAutoReply()` in `monitor.ts`) needs validation against the actual OpenClaw runtime API. The exact method signature may differ between OpenClaw versions. Everything else (SimpleX CLI connection, message parsing, outbound delivery, voice transcription) is production-ready.
-
-## License
-
-MIT
+*Last updated: February 2026*

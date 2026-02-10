@@ -1,6 +1,6 @@
 {
   "name": "@openclaw/simplex",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "SimpleX Chat channel plugin for OpenClaw",
   "license": "MIT",
   "type": "module",
@@ -26,7 +26,6 @@
   },
   "devDependencies": {
     "@types/ws": "^8.5.0",
-    "typescript": "^5.5.0",
-    "vitest": "^2.0.0"
+    "typescript": "^5.5.0"
   }
 }

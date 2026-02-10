@@ -1,8 +1,8 @@
 /**
- * Plugin runtime bridge.
+ * Shared runtime state.
  *
- * Stores the PluginAPI reference so other modules can access
- * the Gateway runtime, logger, and config without circular imports.
+ * Stores the OpenClaw plugin API reference so every module can access
+ * the logger, runtime, and config without prop-drilling.
  */
 
 let _api: any = null;
@@ -12,18 +12,18 @@ export function setApi(api: any): void {
 }
 
 export function getApi(): any {
-  if (!_api) throw new Error("SimpleX plugin API not initialized");
+  if (!_api) throw new Error("[simplex] Plugin API not initialised");
   return _api;
 }
 
-export function getLogger() {
+export function getLogger(): any {
   return getApi().logger;
 }
 
-export function getConfig() {
-  return getApi().config;
+export function getRuntime(): any {
+  return getApi().runtime;
 }
 
-export function getRuntime() {
-  return getApi().runtime;
+export function getConfig(): any {
+  return getApi().config;
 }
