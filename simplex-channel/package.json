@@ -1,0 +1,31 @@
+{
+  "name": "@openclaw/simplex",
+  "version": "0.2.0",
+  "description": "SimpleX Chat channel plugin for OpenClaw",
+  "license": "MIT",
+  "type": "module",
+  "openclaw": {
+    "extensions": ["./src/index.ts"],
+    "channel": {
+      "id": "simplex",
+      "label": "SimpleX Chat",
+      "selectionLabel": "SimpleX Chat (CLI WebSocket)",
+      "docsPath": "/channels/simplex",
+      "docsLabel": "simplex",
+      "blurb": "Private messaging via SimpleX Chat — no user IDs, no metadata.",
+      "order": 80,
+      "aliases": ["sx"]
+    },
+    "install": {
+      "localPath": "extensions/simplex",
+      "defaultChoice": "local"
+    }
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.0",
+    "typescript": "^5.5.0"
+  }
+}

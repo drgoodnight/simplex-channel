@@ -1,0 +1,42 @@
+version: "3.8"
+
+services:
+  simplex-cli:
+    build: ./docker/simplex-cli
+    container_name: simplex-cli
+    restart: unless-stopped
+    volumes:
+      - simplex-data:/home/simplex/.simplex
+      - simplex-files:/home/simplex/files
+    ports:
+      - "${SIMPLEX_WS_PORT:-5225}:${SIMPLEX_WS_PORT:-5225}"
+    environment:
+      - SIMPLEX_WS_PORT=${SIMPLEX_WS_PORT:-5225}
+      - SIMPLEX_DISPLAY_NAME=${SIMPLEX_DISPLAY_NAME:-openclaw}
+    healthcheck:
+      test: ["CMD", "sh", "-c", "ss -tlnp | grep -q ${SIMPLEX_WS_PORT:-5225}"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  whisper:
+    build: ./docker/whisper
+    container_name: simplex-whisper
+    restart: unless-stopped
+    profiles:
+      - whisper
+    ports:
+      - "${WHISPER_PORT:-9000}:9000"
+    environment:
+      - WHISPER_MODEL=${WHISPER_MODEL:-base}
+      - WHISPER_LANGUAGE=${WHISPER_LANGUAGE:-en}
+      - WHISPER_DEVICE=${WHISPER_DEVICE:-cpu}
+    volumes:
+      - whisper-models:/root/.cache/whisper
+      - simplex-files:/home/simplex/files:ro
+
+volumes:
+  simplex-data:
+  simplex-files:
+  whisper-models:
